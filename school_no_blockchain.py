@@ -5,6 +5,7 @@ import datetime
 import json
 import decimal
 from decimal import Decimal, getcontext
+from smtplib import SMTP 
 
 # Set decimal precision for financial calculations
 getcontext().prec = 28
@@ -74,6 +75,11 @@ def init_database():
                    (
                        15
                    ) NOT NULL,
+                       email VARCHAR
+                   (
+                       255
+                   ),
+                       email_verified BOOLEAN DEFAULT FALSE,
                        pin INT NOT NULL,
                        balance DECIMAL
                    (
@@ -135,24 +141,63 @@ def init_database():
     cursor.close()
     connection.close()
 
-def account_open(name, phone_no, pin, balance, account_type):
+def account_open(name, phone_no, pin, balance, account_type, email=None, verify_email=False):
+    """Open a new account with optional email verification"""
     connection = get_connection()
     cursor = connection.cursor()
 
     # Convert balance to Decimal for proper database handling
     balance_decimal = safe_decimal(balance)
+    
+    # Initialize email verification variables
+    email_verified = False
+    email_to_store = None
+    
+    # Verify email if provided and verification is requested
+    if email and verify_email:
+        print("Verifying email address...")
+        try:
+            from kickbox_email_verification import verify_email_address, initialize_kickbox
+            
+            # Initialize Kickbox with test API key
+            initialize_kickbox("test_9e152477679a24e7d8ac0df16467a2f180d3167203fe3789f876db691b8b4c0d")
+            
+            is_valid, status_message, api_response = verify_email_address(email)
+            
+            if is_valid:
+                email_verified = True
+                email_to_store = email
+                print(f"✅ Email verification successful: {status_message}")
+            else:
+                print(f"❌ Email verification failed: {status_message}")
+                print("Account creation will continue without email verification.")
+                email_to_store = email  # Still store the email even if not verified
+                
+        except Exception as e:
+            print(f"⚠️ Email verification service unavailable: {e}")
+            print("Account creation will continue without email verification.")
+            email_to_store = email  # Still store the email even if verification failed
+    elif email:
+        # Email provided but no verification requested
+        email_to_store = email
+        print(f"Email stored: {email} (verification not requested)")
 
     query = """
-            INSERT INTO ACCOUNTS(name, phone_num, pin, balance, account_type)
-            VALUES (%s, %s, %s, %s, %s)
+            INSERT INTO ACCOUNTS(name, phone_num, email, email_verified, pin, balance, account_type)
+            VALUES (%s, %s, %s, %s, %s, %s, %s)
             """
-    values = (name, phone_no, pin, balance_decimal, account_type)
+    values = (name, phone_no, email_to_store, email_verified, pin, balance_decimal, account_type)
 
     try:
         cursor.execute(query, values)
         account_no = cursor.lastrowid
         connection.commit()
         print(f"Account created successfully! Account Number: {account_no}")
+        
+        if email_to_store:
+            verification_status = "verified" if email_verified else "unverified"
+            print(f"Email: {email_to_store} ({verification_status})")
+            
     except Exception as exception:
         print(f"Error creating account: {exception}")
         account_no = None
@@ -221,6 +266,111 @@ def fetch_pin(account_num):
     connection.close()
 
     return result[0] if result else None
+
+def fetch_email(account_num):
+    """Fetch email address for an account"""
+    connection = get_connection()
+    cursor = connection.cursor()
+
+    cursor.execute("SELECT email FROM ACCOUNTS WHERE account_no = %s", (account_num,))
+    result = cursor.fetchone()
+
+    cursor.close()
+    connection.close()
+
+    return result[0] if result else None
+
+def fetch_email_verified(account_num):
+    """Fetch email verification status for an account"""
+    connection = get_connection()
+    cursor = connection.cursor()
+
+    cursor.execute("SELECT email_verified FROM ACCOUNTS WHERE account_no = %s", (account_num,))
+    result = cursor.fetchone()
+
+    cursor.close()
+    connection.close()
+
+    return result[0] if result else False
+
+def update_email(account_num, new_email, verify_email=False):
+    """Update email address for an account"""
+    connection = get_connection()
+    cursor = connection.cursor()
+
+    email_verified = False
+    email_to_store = new_email
+    
+    # Verify email if requested
+    if verify_email:
+        try:
+            from kickbox_email_verification import verify_email_address, initialize_kickbox
+            
+            # Initialize Kickbox with test API key
+            initialize_kickbox("test_9e152477679a24e7d8ac0df16467a2f180d3167203fe3789f876db691b8b4c0d")
+            
+            is_valid, status_message, api_response = verify_email_address(new_email)
+            
+            if is_valid:
+                email_verified = True
+                print(f"✅ Email verification successful: {status_message}")
+            else:
+                print(f"❌ Email verification failed: {status_message}")
+                print("Email will be updated without verification.")
+                
+        except Exception as e:
+            print(f"⚠️ Email verification service unavailable: {e}")
+            print("Email will be updated without verification.")
+
+    try:
+        cursor.execute("UPDATE ACCOUNTS SET email = %s, email_verified = %s WHERE account_no = %s",
+                       (email_to_store, email_verified, account_num))
+        connection.commit()
+        return True
+    except Exception as e:
+        print(f"Error updating email: {e}")
+        return False
+    finally:
+        cursor.close()
+        connection.close()
+
+def verify_email_manually(account_num):
+    """Manually verify email for an existing account"""
+    current_email = fetch_email(account_num)
+    
+    if not current_email:
+        print("No email address found for this account.")
+        return False
+    
+    print(f"Current email: {current_email}")
+    
+    try:
+        from kickbox_email_verification import verify_email_address, initialize_kickbox
+        
+        # Initialize Kickbox with test API key
+        initialize_kickbox("test_9e152477679a24e7d8ac0df16467a2f180d3167203fe3789f876db691b8b4c0d")
+        
+        is_valid, status_message, api_response = verify_email_address(current_email)
+        
+        connection = get_connection()
+        cursor = connection.cursor()
+        
+        cursor.execute("UPDATE ACCOUNTS SET email_verified = %s WHERE account_no = %s",
+                       (is_valid, account_num))
+        connection.commit()
+        cursor.close()
+        connection.close()
+        
+        if is_valid:
+            print(f"✅ Email verification successful: {status_message}")
+        else:
+            print(f"❌ Email verification failed: {status_message}")
+            
+        return is_valid
+        
+    except Exception as e:
+        print(f"⚠️ Email verification service unavailable: {e}")
+        return False
 
 def save_transaction_to_db(from_acc, to_acc, amount, remark):
     """Save transaction to MySQL database (now integrated into transfer_money)"""

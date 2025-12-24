@@ -1,186 +1,63 @@
 import mysql.connector as mycon
 import time
-from cryptography.fernet import Fernet  # Fixed: Changed from Fermat to Fernet
 import calendar
 import datetime
-import hashlib
 import json
-from flask import Flask, jsonify
+import decimal
+from decimal import Decimal, getcontext
+from smtplib import SMTP 
 
-# Generate a key for encryption (in production, store this securely)
-try:
-    with open("secret.key", "rb") as key_file:
-        key = key_file.read()
-except FileNotFoundError:
-    key = Fernet.generate_key()  # Fixed: Changed from Fermat to Fernet
-    with open("secret.key", "wb") as key_file:  # Fixed: Changed 'mb' to 'wb'
-        key_file.write(key)
+# Set decimal precision for financial calculations
+getcontext().prec = 28
 
-cipher_suite = Fernet(key)  # Fixed: Changed from Fermat to Fernet
+# Helper functions for safe decimal handling
+def safe_decimal(value):
+    """Convert value to Decimal safely"""
+    if isinstance(value, Decimal):
+        return value
+    if isinstance(value, float):
+        return Decimal(str(value))
+    if isinstance(value, str):
+        return Decimal(value)
+    if isinstance(value, int):
+        return Decimal(value)
+    return Decimal(str(value))
 
+def format_decimal(value):
+    """Format Decimal for display"""
+    if isinstance(value, Decimal):
+        return f"{value:.2f}"
+    return str(value)
 
-class Blockchain:
-    def __init__(self):
-        self.chain = []
-        self.pending_transactions = []  # Initialize pending_transactions FIRST
-        self.create_block(proof=1, previous_hash='0')  # Then create the first block
+def safe_float_input(prompt):
+    """Get float input from user and convert to Decimal"""
+    while True:
+        try:
+            value = float(input(prompt))
+            if value < 0:
+                print("Value cannot be negative!")
+                continue
+            return Decimal(str(value))
+        except ValueError:
+            print("Invalid input! Please enter a valid number.")
 
-    def create_block(self, proof, previous_hash):
-        block = {
-            'index': len(self.chain) + 1,
-            'timestamp': str(datetime.datetime.now()),
-            'proof': proof,
-            'previous_hash': previous_hash,
-            'transactions': self.pending_transactions.copy()  # Now this will work
-        }
-        self.chain.append(block)
-        self.pending_transactions = []  # Clear pending transactions
-        return block
-
-    def add_transaction(self, from_acc, to_acc, amount, remark):
-        """Add a transaction to pending transactions"""
-        encrypted_remark = cipher_suite.encrypt(remark.encode()).decode()
-
-        transaction = {
-            'from': from_acc,
-            'to': to_acc,
-            'amount': amount,
-            'timestamp': str(datetime.datetime.now()),
-            'remark_encrypted': encrypted_remark,
-            'remark_decrypted': remark  # Store decrypted version temporarily
-        }
-        self.pending_transactions.append(transaction)
-        return len(self.chain) + 1  # Return index of block that will contain this transaction
-
-    def print_previous_block(self):
-        return self.chain[-1]
-
-    def proof_of_work(self, previous_proof):
-        new_proof = 1
-        check_proof = False
-
-        while check_proof is False:
-            hash_operation = hashlib.sha256(
-                str(new_proof ** 2 - previous_proof ** 2).encode()).hexdigest()
-            if hash_operation[:5] == '00000':
-                check_proof = True
-            else:
-                new_proof += 1
-
-        return new_proof
-
-    def hash(self, block):
-        encoded_block = json.dumps(block, sort_keys=True).encode()
-        return hashlib.sha256(encoded_block).hexdigest()
-
-    def chain_valid(self, chain):
-        previous_block = chain[0]
-        block_index = 1
-
-        while block_index < len(chain):
-            block = chain[block_index]
-            if block['previous_hash'] != self.hash(previous_block):
-                return False
-
-            previous_proof = previous_block['proof']
-            proof = block['proof']
-            hash_operation = hashlib.sha256(
-                str(proof ** 2 - previous_proof ** 2).encode()).hexdigest()
-
-            if hash_operation[:5] != '00000':
-                return False
-            previous_block = block
-            block_index += 1
-
-        return True
-
-    def get_transaction_history(self, account_no):
-        """Get all transactions for a specific account"""
-        history = []
-        for block in self.chain:
-            for transaction in block.get('transactions', []):
-                if transaction['from'] == account_no or transaction['to'] == account_no:
-                    # Decrypt the remark for display
-                    try:
-                        decrypted_remark = cipher_suite.decrypt(
-                            transaction['remark_encrypted'].encode()).decode()
-                    except:
-                        decrypted_remark = "Decryption failed"
-
-                    history.append({
-                        'block_index': block['index'],
-                        'timestamp': transaction['timestamp'],
-                        'from': transaction['from'],
-                        'to': transaction['to'],
-                        'amount': transaction['amount'],
-                        'remark': decrypted_remark,
-                        'block_hash': self.hash(block)
-                    })
-        return history
-
-
-# Create blockchain instance
-blockchain = Blockchain()
-
-# Create Flask app for blockchain endpoints
-app = Flask(__name__)
-
-
-# Blockchain API endpoints
-@app.route('/mine_block', methods=['GET'])
-def mine_block():
-    previous_block = blockchain.print_previous_block()
-    previous_proof = previous_block['proof']
-    proof = blockchain.proof_of_work(previous_proof)
-    previous_hash = blockchain.hash(previous_block)
-    block = blockchain.create_block(proof, previous_hash)
-
-    response = {
-        'message': 'A block is MINED',
-        'index': block['index'],
-        'timestamp': block['timestamp'],
-        'proof': block['proof'],
-        'previous_hash': block['previous_hash'],
-        'transactions': len(block['transactions'])
-    }
-    return jsonify(response), 200
-
-
-@app.route('/get_chain', methods=['GET'])
-def display_chain():
-    response = {
-        'chain': blockchain.chain,
-        'length': len(blockchain.chain)
-    }
-    return jsonify(response), 200
-
-
-@app.route('/valid', methods=['GET'])
-def valid():
-    valid = blockchain.chain_valid(blockchain.chain)
-    if valid:
-        response = {'message': 'The Blockchain is valid.'}
-    else:
-        response = {'message': 'The Blockchain is not valid.'}
-    return jsonify(response), 200
-
-
-# Database connection
+# Database connection with timeout settings
 def get_connection():
     return mycon.connect(
         host="localhost",
         user="root",
         passwd="skgamer465",
-        database="bank"
+        database="bank",
+        autocommit=True,
+        connection_timeout=30
     )
-
 
 # Initialize database
 def init_database():
     connection = get_connection()
     cursor = connection.cursor()
 
-    # Create ACCOUNTS table if not exists
+    # Create ACCOUNTS table if not exists with email columns
     cursor.execute("""
                    CREATE TABLE IF NOT EXISTS ACCOUNTS
                    (
@@ -198,6 +75,11 @@ def init_database():
                    (
                        15
                    ) NOT NULL,
+                       email VARCHAR
+                   (
+                       255
+                   ),
+                       email_verified BOOLEAN DEFAULT FALSE,
                        pin INT NOT NULL,
                        balance DECIMAL
                    (
@@ -212,7 +94,22 @@ def init_database():
                        )
                    """)
 
-    # Create TRANSACTION_HISTORY table
+    # Check if email columns exist, add them if missing
+    cursor.execute("""
+        SELECT COUNT(*) as column_exists
+        FROM INFORMATION_SCHEMA.COLUMNS 
+        WHERE TABLE_SCHEMA = 'bank' 
+        AND TABLE_NAME = 'ACCOUNTS' 
+        AND COLUMN_NAME = 'email'
+    """)
+    
+    if cursor.fetchone()[0] == 0:
+        print("Adding email columns to ACCOUNTS table...")
+        cursor.execute("ALTER TABLE ACCOUNTS ADD COLUMN email VARCHAR(255)")
+        cursor.execute("ALTER TABLE ACCOUNTS ADD COLUMN email_verified BOOLEAN DEFAULT FALSE")
+        connection.commit()
+
+    # Create TRANSACTION_HISTORY table (simplified without blockchain)
     cursor.execute("""
                    CREATE TABLE IF NOT EXISTS TRANSACTION_HISTORY
                    (
@@ -235,10 +132,9 @@ def init_database():
                        15,
                        2
                    ) NOT NULL,
-                       remark_encrypted TEXT NOT NULL,
+                       remark TEXT NOT NULL,
                        transaction_date DATE NOT NULL,
                        transaction_time TIME NOT NULL,
-                       block_index INT,
                        FOREIGN KEY
                    (
                        from_account
@@ -260,22 +156,68 @@ def init_database():
     cursor.close()
     connection.close()
 
-
-def account_open(name, phone_no, pin, balance, account_type):
+def account_open(name, phone_no, pin, balance, account_type, email=None, verify_email=False):
+    """Open a new account with optional email verification"""
     connection = get_connection()
     cursor = connection.cursor()
 
+    # Convert balance to Decimal for proper database handling
+    balance_decimal = safe_decimal(balance)
+    
+    # Initialize email verification variables
+    email_verified = False
+    email_to_store = None
+    
+    # Verify email if provided and verification is requested
+    if email and verify_email:
+        print("Verifying email address...")
+        try:
+            # Try to import and use kickbox if available
+            import sys
+            import os
+            sys.path.append(os.path.dirname(os.path.abspath(__file__)))
+            
+            from kickbox_email_verification import verify_email_address, initialize_kickbox
+            
+            # Initialize Kickbox with test API key
+            initialize_kickbox("test_9e152477679a24e7d8ac0df16467a2f180d3167203fe3789f876db691b8b4c0d")
+            
+            is_valid, status_message, api_response = verify_email_address(email)
+            
+            if is_valid:
+                email_verified = True
+                email_to_store = email
+                print(f"✅ Email verification successful: {status_message}")
+            else:
+                print(f"❌ Email verification failed: {status_message}")
+                print("Account creation will continue without email verification.")
+                email_to_store = email  # Still store the email even if not verified
+                
+        except Exception as e:
+            print(f"⚠️ Email verification service unavailable: {e}")
+            print("Account creation will continue without email verification.")
+            email_to_store = email  # Still store the email even if verification failed
+    elif email:
+        # Email provided but no verification requested
+        email_to_store = email
+        print(f"Email stored: {email} (verification not requested)")
+
     query = """
-            INSERT INTO ACCOUNTS(name, phone_num, pin, balance, account_type)
-            VALUES (%s, %s, %s, %s, %s) \
+            INSERT INTO ACCOUNTS(name, phone_num, email, email_verified, pin, balance, account_type)
+            VALUES (%s, %s, %s, %s, %s, %s, %s)
             """
-    values = (name, phone_no, pin, balance, account_type)
+    values = (name, phone_no, email_to_store, email_verified, pin, balance_decimal, account_type)
 
     try:
         cursor.execute(query, values)
         account_no = cursor.lastrowid
         connection.commit()
         print(f"Account created successfully! Account Number: {account_no}")
+        
+        if email_to_store:
+            verification_status = "verified" if email_verified else "unverified"
+            print(f"Email: {email_to_store} ({verification_status})")
+            
     except Exception as exception:
         print(f"Error creating account: {exception}")
         account_no = None
@@ -284,7 +226,6 @@ def account_open(name, phone_no, pin, balance, account_type):
         connection.close()
 
     return account_no
-
 
 def fetch_balance(account_num):
     connection = get_connection()
@@ -298,7 +239,6 @@ def fetch_balance(account_num):
 
     return result[0] if result else 0
 
-
 def fetch_name(account_num):
     connection = get_connection()
     cursor = connection.cursor()
@@ -310,7 +250,6 @@ def fetch_name(account_num):
     connection.close()
 
     return result[0] if result else None
-
 
 def fetch_account_type(account_num):
     connection = get_connection()
@@ -324,7 +263,6 @@ def fetch_account_type(account_num):
 
     return result[0] if result else None
 
-
 def fetch_phone_no(account_num):
     connection = get_connection()
     cursor = connection.cursor()
@@ -336,7 +274,6 @@ def fetch_phone_no(account_num):
     connection.close()
 
     return result[0] if result else None
-
 
 def fetch_pin(account_num):
     connection = get_connection()
@@ -350,44 +287,146 @@ def fetch_pin(account_num):
 
     return result[0] if result else None
 
-
-def save_transaction_to_db(from_acc, to_acc, amount, remark, block_index=None):
-    """Save transaction to MySQL database"""
+def fetch_email(account_num):
+    """Fetch email address for an account"""
     connection = get_connection()
     cursor = connection.cursor()
 
-    # Encrypt remark
-    encrypted_remark = cipher_suite.encrypt(remark.encode()).decode()
+    cursor.execute("SELECT email FROM ACCOUNTS WHERE account_no = %s", (account_num,))
+    result = cursor.fetchone()
 
-    query = """
-            INSERT INTO TRANSACTION_HISTORY
-            (from_account, to_account, amount, remark_encrypted, transaction_date, transaction_time, block_index)
-            VALUES (%s, %s, %s, %s, CURDATE(), CURTIME(), %s) \
-            """
-    values = (from_acc, to_acc, amount, encrypted_remark, block_index)
+    cursor.close()
+    connection.close()
+
+    return result[0] if result else None
+
+def fetch_email_verified(account_num):
+    """Fetch email verification status for an account"""
+    connection = get_connection()
+    cursor = connection.cursor()
+
+    cursor.execute("SELECT email_verified FROM ACCOUNTS WHERE account_no = %s", (account_num,))
+    result = cursor.fetchone()
+
+    cursor.close()
+    connection.close()
+
+    return result[0] if result else False
+
+def update_email(account_num, new_email, verify_email=False):
+    """Update email address for an account"""
+    connection = get_connection()
+    cursor = connection.cursor()
+
+    email_verified = False
+    email_to_store = new_email
+    
+    # Verify email if requested
+    if verify_email:
+        try:
+            from kickbox_email_verification import verify_email_address, initialize_kickbox
+            
+            # Initialize Kickbox with test API key
+            initialize_kickbox("test_9e152477679a24e7d8ac0df16467a2f180d3167203fe3789f876db691b8b4c0d")
+            
+            is_valid, status_message, api_response = verify_email_address(new_email)
+            
+            if is_valid:
+                email_verified = True
+                print(f"✅ Email verification successful: {status_message}")
+            else:
+                print(f"❌ Email verification failed: {status_message}")
+                print("Email will be updated without verification.")
+                
+        except Exception as e:
+            print(f"⚠️ Email verification service unavailable: {e}")
+            print("Email will be updated without verification.")
 
     try:
-        cursor.execute(query, values)
+        cursor.execute("UPDATE ACCOUNTS SET email = %s, email_verified = %s WHERE account_no = %s",
+                       (email_to_store, email_verified, account_num))
         connection.commit()
+        return True
     except Exception as e:
-        print(f"Error saving transaction to database: {e}")
+        print(f"Error updating email: {e}")
+        return False
     finally:
         cursor.close()
         connection.close()
 
+def verify_email_manually(account_num):
+    """Manually verify email for an existing account"""
+    current_email = fetch_email(account_num)
+    
+    if not current_email:
+        print("No email address found for this account.")
+        return False
+    
+    print(f"Current email: {current_email}")
+    
+    try:
+        from kickbox_email_verification import verify_email_address, initialize_kickbox
+        
+        # Initialize Kickbox with test API key
+        initialize_kickbox("test_9e152477679a24e7d8ac0df16467a2f180d3167203fe3789f876db691b8b4c0d")
+        
+        is_valid, status_message, api_response = verify_email_address(current_email)
+        
+        connection = get_connection()
+        cursor = connection.cursor()
+        
+        cursor.execute("UPDATE ACCOUNTS SET email_verified = %s WHERE account_no = %s",
+                       (is_valid, account_num))
+        connection.commit()
+        cursor.close()
+        connection.close()
+        
+        if is_valid:
+            print(f"✅ Email verification successful: {status_message}")
+        else:
+            print(f"❌ Email verification failed: {status_message}")
+            
+        return is_valid
+        
+    except Exception as e:
+        print(f"⚠️ Email verification service unavailable: {e}")
+        return False
+
+def save_transaction_to_db(from_acc, to_acc, amount, remark):
+    """Save transaction to MySQL database (now integrated into transfer_money)"""
+    # This function is kept for compatibility but transactions are now saved 
+    # within the transfer_money function to avoid separate database operations
+    try:
+        # This function is deprecated - transactions are now saved in transfer_money
+        print("Note: Transaction logging is now handled within transfer operation.")
+    except Exception as e:
+        print(f"Warning: Could not log transaction: {e}")
+    return True
 
 def transfer_money(from_acc, to_acc, amount, remark="Transfer"):
-    """Transfer money between accounts using blockchain"""
+    """Transfer money between accounts with proper transaction handling"""
     connection = get_connection()
     cursor = connection.cursor()
 
     try:
-        # Check if both accounts exist
-        cursor.execute("SELECT balance FROM ACCOUNTS WHERE account_no = %s", (from_acc,))
-        from_result = cursor.fetchone()
+        # Set transaction isolation level to reduce lock contention
+        cursor.execute("SET TRANSACTION ISOLATION LEVEL READ COMMITTED")
+        
+        # Convert amount to Decimal for safe arithmetic operations
+        amount_decimal = safe_decimal(amount)
 
-        cursor.execute("SELECT account_no FROM ACCOUNTS WHERE account_no = %s", (to_acc,))
-        to_result = cursor.fetchone()
+        # Use row-level locking to prevent deadlocks
+        # Lock both accounts in consistent order to avoid deadlock
+        if from_acc < to_acc:
+            cursor.execute("SELECT balance FROM ACCOUNTS WHERE account_no = %s FOR UPDATE", (from_acc,))
+            from_result = cursor.fetchone()
+            cursor.execute("SELECT balance FROM ACCOUNTS WHERE account_no = %s FOR UPDATE", (to_acc,))
+            to_result = cursor.fetchone()
+        else:
+            cursor.execute("SELECT balance FROM ACCOUNTS WHERE account_no = %s FOR UPDATE", (to_acc,))
+            to_result = cursor.fetchone()
+            cursor.execute("SELECT balance FROM ACCOUNTS WHERE account_no = %s FOR UPDATE", (from_acc,))
+            from_result = cursor.fetchone()
 
         if not from_result:
             print("From account does not exist!")
@@ -398,111 +437,155 @@ def transfer_money(from_acc, to_acc, amount, remark="Transfer"):
             return False
 
         from_acc_balance = from_result[0]
+        to_acc_balance = to_result[0]
 
-        if from_acc_balance >= amount:
-            # Update balances
-            new_from_balance = from_acc_balance - amount
+        if from_acc_balance >= amount_decimal:
+            # Update balances in the same transaction
+            new_from_balance = from_acc_balance - amount_decimal
+            new_to_balance = to_acc_balance + amount_decimal
 
-            cursor.execute("SELECT balance FROM ACCOUNTS WHERE account_no = %s", (to_acc,))
-            to_acc_balance = cursor.fetchone()[0]
-            new_to_balance = to_acc_balance + amount
-
-            # Update accounts
+            # Update both accounts atomically
             cursor.execute("UPDATE ACCOUNTS SET balance = %s WHERE account_no = %s",
                            (new_from_balance, from_acc))
             cursor.execute("UPDATE ACCOUNTS SET balance = %s WHERE account_no = %s",
                            (new_to_balance, to_acc))
 
-            # Add transaction to blockchain
-            transaction_index = blockchain.add_transaction(from_acc, to_acc, amount, remark)
-
-            # Save to database
-            save_transaction_to_db(from_acc, to_acc, amount, remark, transaction_index)
+            # Insert transaction record in the same transaction
+            cursor.execute("""
+                INSERT INTO TRANSACTION_HISTORY
+                (from_account, to_account, amount, remark_encrypted, transaction_date, transaction_time)
+                VALUES (%s, %s, %s, %s, CURDATE(), CURTIME())
+            """, (from_acc, to_acc, amount_decimal, remark))
 
             connection.commit()
             print("Transfer successful!")
-
-            # Mine a block after every transaction
-            print("Mining block with transactions...")
-            previous_block = blockchain.print_previous_block()
-            previous_proof = previous_block['proof']
-            proof = blockchain.proof_of_work(previous_proof)
-            previous_hash = blockchain.hash(previous_block)
-            blockchain.create_block(proof, previous_hash)
-            print("Block mined successfully!")
-
             return True
         else:
             print("Insufficient balance in the from account.")
+            connection.rollback()
             return False
 
+    except mycon.Error as e:
+        if e.errno == 1205:  # Lock wait timeout
+            print("Transfer failed due to database lock timeout. Please try again.")
+        else:
+            print(f"Database error during transfer: {e}")
+        try:
+            connection.rollback()
+        except:
+            pass
+        return False
     except Exception as e:
         print(f"Error during transfer: {e}")
-        connection.rollback()
+        try:
+            connection.rollback()
+        except:
+            pass
         return False
     finally:
         cursor.close()
         connection.close()
 
-
 def get_transaction_history(account_no):
-    """Get transaction history from blockchain"""
-    print("\n=== Blockchain Transaction History ===")
-    history = blockchain.get_transaction_history(account_no)
-
-    if not history:
-        print("No transactions found in blockchain.")
-        return
-
-    for i, transaction in enumerate(history, 1):
-        print(f"\nTransaction {i}:")
-        print(f"  Block #{transaction['block_index']}")
-        print(f"  Date/Time: {transaction['timestamp']}")
-        print(f"  From: {transaction['from']}")
-        print(f"  To: {transaction['to']}")
-        print(f"  Amount: ₹{transaction['amount']}")
-        print(f"  Remark: {transaction['remark']}")
-        print(f"  Block Hash: {transaction['block_hash'][:20]}...")
-
-    # Also show database history
-    print("\n=== Database Transaction History ===")
+    """Get transaction history from database"""
+    print("\n=== Transaction History ===")
     connection = get_connection()
     cursor = connection.cursor()
 
     query = """
-            SELECT th.transaction_date, \
-                   th.transaction_time, \
+            SELECT th.transaction_date, 
+                   th.transaction_time, 
                    th.from_account,
-                   th.to_account, \
-                   th.amount, \
-                   th.remark_encrypted, \
-                   th.block_index
+                   th.to_account, 
+                   th.amount, 
+                   th.remark_encrypted
             FROM TRANSACTION_HISTORY th
-            WHERE th.from_account = %s \
+            WHERE th.from_account = %s 
                OR th.to_account = %s
-            ORDER BY th.transaction_date DESC, th.transaction_time DESC LIMIT 10 \
+            ORDER BY th.transaction_date DESC, th.transaction_time DESC LIMIT 10
             """
 
     cursor.execute(query, (account_no, account_no))
-    db_transactions = cursor.fetchall()
+    transactions = cursor.fetchall()
 
-    if not db_transactions:
-        print("No transactions found in database.")
+    if not transactions:
+        print("No transactions found.")
     else:
-        for trans in db_transactions:
-            try:
-                decrypted_remark = cipher_suite.decrypt(trans[5].encode()).decode()
-            except:
-                decrypted_remark = "Decryption failed"
-
+        for trans in transactions:
             print(f"\nDate: {trans[0]} Time: {trans[1]}")
-            print(f"From: {trans[2]} To: {trans[3]} Amount: ₹{trans[4]}")
-            print(f"Remark: {decrypted_remark}")
-            print(f"Block Index: {trans[6] if trans[6] else 'Pending'}")
+            print(f"From: {trans[2]} To: {trans[3]} Amount: ₹{format_decimal(trans[4])}")
+            print(f"Remark: {trans[5]}")
 
     cursor.close()
     connection.close()
 
+def email_management_menu(account_no):
+    """Email management submenu"""
+    while True:
+        print("\n=== EMAIL MANAGEMENT ===")
+        current_email = fetch_email(account_no)
+        email_verified = fetch_email_verified(account_no)
+        
+        if current_email:
+            verification_status = "✅ Verified" if email_verified else "❌ Unverified"
+            print(f"Current email: {current_email} ({verification_status})")
+        else:
+            print("No email address associated with this account.")
+        
+        print("\n1. Add/Update email")
+        print("2. Verify email manually")
+        print("3. View email verification status")
+        print("4. Back to main menu")
+        
+        try:
+            choice = int(input("ENTER YOUR CHOICE: "))
+        except ValueError:
+            print("Invalid input! Please enter a number.")
+            continue
+        
+        if choice == 1:
+            new_email = input("ENTER NEW EMAIL ADDRESS: ")
+            
+            # Basic email format validation
+            import re
+            if not re.match(r'^[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}$', new_email):
+                print("❌ Invalid email format!")
+                continue
+            
+            verify_choice = input("Verify email with Kickbox API? (Y/N): ").upper()
+            verify_email = verify_choice == 'Y'
+            
+            if update_email(account_no, new_email, verify_email):
+                print("✅ Email updated successfully!")
+            else:
+                print("❌ Failed to update email.")
+                
+        elif choice == 2:
+            if not current_email:
+                print("No email address to verify. Please add an email first.")
+                continue
+                
+            print("Verifying email with Kickbox API...")
+            if verify_email_manually(account_no):
+                print("✅ Email verification completed!")
+            else:
+                print("❌ Email verification failed.")
+                
+        elif choice == 3:
+            if current_email:
+                verification_status = "✅ Verified" if email_verified else "❌ Unverified"
+                print(f"Email verification status: {verification_status}")
+                
+                if not email_verified:
+                    print("Tip: You can manually verify your email using option 2.")
+            else:
+                print("No email address found.")
+                
+        elif choice == 4:
+            break
+            
+        else:
+            print("Invalid choice!")
 
 def login(account_no, pin):
     print("\nWelcome to login page")
@@ -513,7 +596,7 @@ def login(account_no, pin):
         print("3. Change PIN")
         print("4. Update personal info")
         print("5. Check transaction history")
-        print("6. View blockchain info")
+        print("6. Email management")
         print("7. Logout")
 
         try:
@@ -527,6 +610,8 @@ def login(account_no, pin):
             balance = fetch_balance(account_no)
             account_type = fetch_account_type(account_no)
             phone_no = fetch_phone_no(account_no)
+            email = fetch_email(account_no)
+            email_verified = fetch_email_verified(account_no)
 
             print("\nFetching account details...")
             time.sleep(1)
@@ -536,13 +621,18 @@ def login(account_no, pin):
             print(f"Account Number: {account_no}")
             print(f"Name: {name}")
             print(f"Phone Number: {phone_no}")
+            if email:
+                verification_status = "✅ Verified" if email_verified else "❌ Unverified"
+                print(f"Email: {email} ({verification_status})")
+            else:
+                print("Email: Not provided")
             print(f"Account Type: {account_type}")
-            print(f"Balance: ₹{balance}")
+            print(f"Balance: ₹{format_decimal(balance)}")
 
         elif choice == 2:
             try:
                 to_acc = int(input("ENTER THE ACCOUNT NUMBER TO TRANSFER MONEY: "))
-                amount = float(input("ENTER THE AMOUNT TO TRANSFER: "))
+                amount = safe_float_input("ENTER THE AMOUNT TO TRANSFER: ")
                 remark = input("ENTER REMARK FOR TRANSACTION: ")
 
                 if amount <= 0:
@@ -605,19 +695,7 @@ def login(account_no, pin):
             get_transaction_history(account_no)
 
         elif choice == 6:
-            print("\n=== Blockchain Information ===")
-            print(f"Total Blocks: {len(blockchain.chain)}")
-            print(f"Pending Transactions: {len(blockchain.pending_transactions)}")
-            print(f"Chain Valid: {blockchain.chain_valid(blockchain.chain)}")
-
-            view_chain = input("View full chain? (Y/N): ")
-            if view_chain.upper() == 'Y':
-                print("\nBlockchain:")
-                for i, block in enumerate(blockchain.chain):
-                    print(f"\nBlock {i + 1}:")
-                    print(f"  Hash: {blockchain.hash(block)[:20]}...")
-                    print(f"  Transactions: {len(block.get('transactions', []))}")
-                    print(f"  Timestamp: {block['timestamp']}")
+            email_management_menu(account_no)
 
         elif choice == 7:
             print("LOGGING OUT...")
@@ -628,25 +706,20 @@ def login(account_no, pin):
         else:
             print("INVALID CHOICE!")
 
-
 def main():
     # Initialize database
     init_database()
 
-    print("Initializing blockchain...")
-    time.sleep(1)
-
     while True:
         print("\n" + "=" * 50)
-        print("WELCOME TO BANK MANAGEMENT SYSTEM WITH BLOCKCHAIN")
+        print("WELCOME TO BANK MANAGEMENT SYSTEM")
         print("=" * 50)
         time.sleep(0.5)
 
         print("\n1. OPEN ACCOUNT")
         print("2. LOGIN ACCOUNT")
         print("3. ABOUT")
-        print("4. BLOCKCHAIN INFO")
-        print("5. EXIT")
+        print("4. EXIT")
 
         try:
             choice = int(input("\nENTER YOUR CHOICE: "))
@@ -658,6 +731,23 @@ def main():
             print("\n=== OPEN NEW ACCOUNT ===")
             name = input("ENTER YOUR NAME: ")
             phone_no = input("ENTER YOUR PHONE NUMBER: ")
+            
+            # Email input with verification option
+            email_choice = input("Do you want to provide email address? (Y/N): ").upper()
+            email = None
+            verify_email = False
+            
+            if email_choice == 'Y':
+                email = input("ENTER YOUR EMAIL ADDRESS: ")
+                
+                # Basic email format validation
+                import re
+                if not re.match(r'^[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}$', email):
+                    print("❌ Invalid email format! Account will be created without email.")
+                    email = None
+                else:
+                    verification_choice = input("Verify email with Kickbox API? (Y/N): ").upper()
+                    verify_email = verification_choice == 'Y'
 
             try:
                 pin = int(input("ENTER YOUR PIN (4-6 digits): "))
@@ -665,17 +755,14 @@ def main():
                     print("PIN must be 4-6 digits!")
                     continue
 
-                balance = float(input("ENTER INITIAL DEPOSIT AMOUNT: "))
-                if balance < 0:
-                    print("Balance cannot be negative!")
-                    continue
+                balance = safe_float_input("ENTER INITIAL DEPOSIT AMOUNT: ")
 
                 account_type = input("ENTER ACCOUNT TYPE (SAVINGS/CURRENT): ").upper()
                 if account_type not in ['SAVINGS', 'CURRENT']:
                     print("Account type must be SAVINGS or CURRENT!")
                     continue
 
-                account_no = account_open(name, phone_no, pin, balance, account_type)
+                account_no = account_open(name, phone_no, pin, balance, account_type, email, verify_email)
                 if account_no:
                     print(f"\nAccount opened successfully!")
                     print(f"Your account number is: {account_no}")
@@ -706,43 +793,20 @@ def main():
 
         elif choice == 3:
             print("\n" + "=" * 50)
-            print("BANK MANAGEMENT SYSTEM WITH BLOCKCHAIN - VERSION 2.0")
+            print("BANK MANAGEMENT SYSTEM - VERSION 3.0")
             print("=" * 50)
             print("\nDeveloped by: SIDHARTH and RITESH")
             print("\nFeatures:")
             print("- Secure account management")
-            print("- Blockchain-based transaction recording")
-            print("- Encrypted transaction remarks")
+            print("- Email verification with Kickbox API")
             print("- Real-time balance tracking")
-            print("- Transaction history with blockchain verification")
+            print("- Transaction history")
+            print("- PIN and personal info management")
+            print("- Email management and verification")
+            print("- No blockchain - simplified system")
             time.sleep(3)
 
         elif choice == 4:
-            print("\n=== BLOCKCHAIN INFORMATION ===")
-            print(f"Total Blocks: {len(blockchain.chain)}")
-            print(f"Pending Transactions: {len(blockchain.pending_transactions)}")
-            print(f"Chain Valid: {blockchain.chain_valid(blockchain.chain)}")
-
-            # Display some blockchain stats
-            total_transactions = 0
-            for block in blockchain.chain:
-                total_transactions += len(block.get('transactions', []))
-
-            print(f"Total Transactions in Blockchain: {total_transactions}")
-            print(f"First Block Timestamp: {blockchain.chain[0]['timestamp']}")
-            print(f"Last Block Timestamp: {blockchain.chain[-1]['timestamp']}")
-
-            view_details = input("\nView blockchain details? (Y/N): ")
-            if view_details.upper() == 'Y':
-                print("\nBlockchain Structure:")
-                for i, block in enumerate(blockchain.chain):
-                    print(f"\nBlock #{i + 1}:")
-                    print(f"  Hash: {blockchain.hash(block)[:30]}...")
-                    print(f"  Previous Hash: {block['previous_hash'][:30]}...")
-                    print(f"  Proof: {block['proof']}")
-                    print(f"  Transactions: {len(block.get('transactions', []))}")
-
-        elif choice == 5:
             print("\nEXITING...")
             time.sleep(1)
             print("THANK YOU FOR USING BANK MANAGEMENT SYSTEM!")
@@ -752,26 +816,6 @@ def main():
         else:
             print("INVALID CHOICE! Please try again.")
 
-
-def run_flask():
-    """Run Flask server in a separate thread for blockchain API"""
-    import threading
-    flask_thread = threading.Thread(target=lambda: app.run(
-        host='127.0.0.1',
-        port=5000,
-        debug=False,
-        use_reloader=False
-    ))
-    flask_thread.daemon = True
-    flask_thread.start()
-    print("Blockchain API running at http://127.0.0.1:5000")
-
-
 if __name__ == "__main__":
-    # Start Flask server for blockchain API
-    run_flask()
-    time.sleep(1)
-
-
-    # Run main application
     main()
+
