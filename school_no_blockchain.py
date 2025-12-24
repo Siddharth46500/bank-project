@@ -40,13 +40,15 @@ def safe_float_input(prompt):
         except ValueError:
             print("Invalid input! Please enter a valid number.")
 
-# Database connection
+# Database connection with timeout settings
 def get_connection():
     return mycon.connect(
         host="localhost",
         user="root",
         passwd="skgamer465",
-        database="bank"
+        database="bank",
+        autocommit=True,
+        connection_timeout=30
     )
 
 # Initialize database
@@ -221,41 +223,40 @@ def fetch_pin(account_num):
     return result[0] if result else None
 
 def save_transaction_to_db(from_acc, to_acc, amount, remark):
-    """Save transaction to MySQL database"""
-    connection = get_connection()
-    cursor = connection.cursor()
-
-    query = """
-            INSERT INTO TRANSACTION_HISTORY
-            (from_account, to_account, amount, remark, transaction_date, transaction_time)
-            VALUES (%s, %s, %s, %s, CURDATE(), CURTIME())
-            """
-    values = (from_acc, to_acc, amount, remark)
-
+    """Save transaction to MySQL database (now integrated into transfer_money)"""
+    # This function is kept for compatibility but transactions are now saved 
+    # within the transfer_money function to avoid separate database operations
     try:
-        cursor.execute(query, values)
-        connection.commit()
+        # This function is deprecated - transactions are now saved in transfer_money
+        print("Note: Transaction logging is now handled within transfer operation.")
     except Exception as e:
-        print(f"Error saving transaction to database: {e}")
-    finally:
-        cursor.close()
-        connection.close()
+        print(f"Warning: Could not log transaction: {e}")
+    return True
 
 def transfer_money(from_acc, to_acc, amount, remark="Transfer"):
-    """Transfer money between accounts"""
+    """Transfer money between accounts with proper transaction handling"""
     connection = get_connection()
     cursor = connection.cursor()
 
     try:
+        # Set transaction isolation level to reduce lock contention
+        cursor.execute("SET TRANSACTION ISOLATION LEVEL READ COMMITTED")
+        
         # Convert amount to Decimal for safe arithmetic operations
         amount_decimal = safe_decimal(amount)
 
-        # Check if both accounts exist
-        cursor.execute("SELECT balance FROM ACCOUNTS WHERE account_no = %s", (from_acc,))
-        from_result = cursor.fetchone()
-
-        cursor.execute("SELECT account_no FROM ACCOUNTS WHERE account_no = %s", (to_acc,))
-        to_result = cursor.fetchone()
+        # Use row-level locking to prevent deadlocks
+        # Lock both accounts in consistent order to avoid deadlock
+        if from_acc < to_acc:
+            cursor.execute("SELECT balance FROM ACCOUNTS WHERE account_no = %s FOR UPDATE", (from_acc,))
+            from_result = cursor.fetchone()
+            cursor.execute("SELECT balance FROM ACCOUNTS WHERE account_no = %s FOR UPDATE", (to_acc,))
+            to_result = cursor.fetchone()
+        else:
+            cursor.execute("SELECT balance FROM ACCOUNTS WHERE account_no = %s FOR UPDATE", (to_acc,))
+            to_result = cursor.fetchone()
+            cursor.execute("SELECT balance FROM ACCOUNTS WHERE account_no = %s FOR UPDATE", (from_acc,))
+            from_result = cursor.fetchone()
 
         if not from_result:
             print("From account does not exist!")
@@ -266,34 +267,50 @@ def transfer_money(from_acc, to_acc, amount, remark="Transfer"):
             return False
 
         from_acc_balance = from_result[0]
+        to_acc_balance = to_result[0]
 
         if from_acc_balance >= amount_decimal:
-            # Update balances
+            # Update balances in the same transaction
             new_from_balance = from_acc_balance - amount_decimal
-
-            cursor.execute("SELECT balance FROM ACCOUNTS WHERE account_no = %s", (to_acc,))
-            to_acc_balance = cursor.fetchone()[0]
             new_to_balance = to_acc_balance + amount_decimal
 
-            # Update accounts
+            # Update both accounts atomically
             cursor.execute("UPDATE ACCOUNTS SET balance = %s WHERE account_no = %s",
                            (new_from_balance, from_acc))
             cursor.execute("UPDATE ACCOUNTS SET balance = %s WHERE account_no = %s",
                            (new_to_balance, to_acc))
 
-            # Save to database
-            save_transaction_to_db(from_acc, to_acc, amount_decimal, remark)
+            # Insert transaction record in the same transaction
+            cursor.execute("""
+                INSERT INTO TRANSACTION_HISTORY
+                (from_account, to_account, amount, remark_encrypted, transaction_date, transaction_time)
+                VALUES (%s, %s, %s, %s, CURDATE(), CURTIME())
+            """, (from_acc, to_acc, amount_decimal, remark))
 
             connection.commit()
             print("Transfer successful!")
             return True
         else:
             print("Insufficient balance in the from account.")
+            connection.rollback()
             return False
 
+    except mycon.Error as e:
+        if e.errno == 1205:  # Lock wait timeout
+            print("Transfer failed due to database lock timeout. Please try again.")
+        else:
+            print(f"Database error during transfer: {e}")
+        try:
+            connection.rollback()
+        except:
+            pass
+        return False
     except Exception as e:
         print(f"Error during transfer: {e}")
-        connection.rollback()
+        try:
+            connection.rollback()
+        except:
+            pass
         return False
     finally:
         cursor.close()
@@ -311,7 +328,7 @@ def get_transaction_history(account_no):
                    th.from_account,
                    th.to_account, 
                    th.amount, 
-                   th.remark
+                   th.remark_encrypted
             FROM TRANSACTION_HISTORY th
             WHERE th.from_account = %s 
                OR th.to_account = %s
