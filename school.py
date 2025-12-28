@@ -46,7 +46,7 @@ def get_connection():
     return mycon.connect(
         host="localhost",
         user="root",
-        passwd="skgamer465",
+        passwd="root",
         database="bank",
         autocommit=True,
         connection_timeout=30
@@ -57,7 +57,7 @@ def init_database():
     connection = get_connection()
     cursor = connection.cursor()
 
-    # Create ACCOUNTS table if not exists with email columns
+    # Create ACCOUNTS table if not exists
     cursor.execute("""
                    CREATE TABLE IF NOT EXISTS ACCOUNTS
                    (
@@ -79,7 +79,6 @@ def init_database():
                    (
                        255
                    ),
-                       email_verified BOOLEAN DEFAULT FALSE,
                        pin INT NOT NULL,
                        balance DECIMAL
                    (
@@ -94,19 +93,18 @@ def init_database():
                        )
                    """)
 
-    # Check if email columns exist, add them if missing
+    # Check if email column exists, add it if missing
     cursor.execute("""
         SELECT COUNT(*) as column_exists
-        FROM INFORMATION_SCHEMA.COLUMNS 
-        WHERE TABLE_SCHEMA = 'bank' 
-        AND TABLE_NAME = 'ACCOUNTS' 
+        FROM INFORMATION_SCHEMA.COLUMNS
+        WHERE TABLE_SCHEMA = 'bank'
+        AND TABLE_NAME = 'ACCOUNTS'
         AND COLUMN_NAME = 'email'
     """)
-    
+
     if cursor.fetchone()[0] == 0:
-        print("Adding email columns to ACCOUNTS table...")
+        print("Adding email column to ACCOUNTS table...")
         cursor.execute("ALTER TABLE ACCOUNTS ADD COLUMN email VARCHAR(255)")
-        cursor.execute("ALTER TABLE ACCOUNTS ADD COLUMN email_verified BOOLEAN DEFAULT FALSE")
         connection.commit()
 
     # Create TRANSACTION_HISTORY table (simplified without blockchain)
@@ -152,72 +150,69 @@ def init_database():
                        )
                    """)
 
+    # Create ADMIN table
+    cursor.execute("""
+                   CREATE TABLE IF NOT EXISTS ADMIN
+                   (
+                       id INT AUTO_INCREMENT PRIMARY KEY,
+                       username VARCHAR(50) UNIQUE NOT NULL,
+                       password VARCHAR(255) NOT NULL,
+                       created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+                       )
+                   """)
+
+    # Insert default admin if not exists
+    cursor.execute("SELECT COUNT(*) FROM ADMIN WHERE username = 'admin'")
+    if cursor.fetchone()[0] == 0:
+        cursor.execute("INSERT INTO ADMIN (username, password) VALUES (%s, %s)",
+                       ('admin', 'admin123'))
+        print("Default admin account created (username: admin, password: admin123)")
+
     connection.commit()
     cursor.close()
     connection.close()
 
-def account_open(name, phone_no, pin, balance, account_type, email=None, verify_email=False):
-    """Open a new account with optional email verification"""
+def validate_email_format(email):
+    """Validate email format using regex"""
+    import re
+    pattern = r'^[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}$'
+    return re.match(pattern, email) is not None
+
+def account_open(name, phone_no, pin, balance, account_type, email=None):
+    """Open a new account with optional email (regex validation only)"""
     connection = get_connection()
     cursor = connection.cursor()
 
     # Convert balance to Decimal for proper database handling
     balance_decimal = safe_decimal(balance)
-    
-    # Initialize email verification variables
-    email_verified = False
+
+    # Initialize email variables
     email_to_store = None
-    
-    # Verify email if provided and verification is requested
-    if email and verify_email:
-        print("Verifying email address...")
-        try:
-            # Try to import and use kickbox if available
-            import sys
-            import os
-            sys.path.append(os.path.dirname(os.path.abspath(__file__)))
-            
-            from kickbox_email_verification import verify_email_address, initialize_kickbox
-            
-            # Initialize Kickbox with test API key
-            initialize_kickbox("test_9e152477679a24e7d8ac0df16467a2f180d3167203fe3789f876db691b8b4c0d")
-            
-            is_valid, status_message, api_response = verify_email_address(email)
-            
-            if is_valid:
-                email_verified = True
-                email_to_store = email
-                print(f"✅ Email verification successful: {status_message}")
-            else:
-                print(f"❌ Email verification failed: {status_message}")
-                print("Account creation will continue without email verification.")
-                email_to_store = email  # Still store the email even if not verified
-                
-        except Exception as e:
-            print(f"⚠️ Email verification service unavailable: {e}")
-            print("Account creation will continue without email verification.")
-            email_to_store = email  # Still store the email even if verification failed
-    elif email:
-        # Email provided but no verification requested
-        email_to_store = email
-        print(f"Email stored: {email} (verification not requested)")
+
+    # Validate email format if provided
+    if email:
+        if validate_email_format(email):
+            email_to_store = email
+            print(f"Email format validated: {email}")
+        else:
+            print("❌ Invalid email format! Account will be created without email.")
+            email_to_store = None
 
     query = """
-            INSERT INTO ACCOUNTS(name, phone_num, email, email_verified, pin, balance, account_type)
-            VALUES (%s, %s, %s, %s, %s, %s, %s)
+            INSERT INTO ACCOUNTS(name, phone_num, email, pin, balance, account_type)
+            VALUES (%s, %s, %s, %s, %s, %s)
             """
-    values = (name, phone_no, email_to_store, email_verified, pin, balance_decimal, account_type)
+    values = (name, phone_no, email_to_store, pin, balance_decimal, account_type)
 
     try:
         cursor.execute(query, values)
         account_no = cursor.lastrowid
         connection.commit()
         print(f"Account created successfully! Account Number: {account_no}")
-        
+
         if email_to_store:
-            verification_status = "verified" if email_verified else "unverified"
-            print(f"Email: {email_to_store} ({verification_status})")
-            
+            print(f"Email: {email_to_store}")
+
     except Exception as exception:
         print(f"Error creating account: {exception}")
         account_no = None
@@ -300,51 +295,21 @@ def fetch_email(account_num):
 
     return result[0] if result else None
 
-def fetch_email_verified(account_num):
-    """Fetch email verification status for an account"""
+def update_email(account_num, new_email):
+    """Update email address for an account with regex validation"""
     connection = get_connection()
     cursor = connection.cursor()
 
-    cursor.execute("SELECT email_verified FROM ACCOUNTS WHERE account_no = %s", (account_num,))
-    result = cursor.fetchone()
-
-    cursor.close()
-    connection.close()
-
-    return result[0] if result else False
-
-def update_email(account_num, new_email, verify_email=False):
-    """Update email address for an account"""
-    connection = get_connection()
-    cursor = connection.cursor()
-
-    email_verified = False
     email_to_store = new_email
-    
-    # Verify email if requested
-    if verify_email:
-        try:
-            from kickbox_email_verification import verify_email_address, initialize_kickbox
-            
-            # Initialize Kickbox with test API key
-            initialize_kickbox("test_9e152477679a24e7d8ac0df16467a2f180d3167203fe3789f876db691b8b4c0d")
-            
-            is_valid, status_message, api_response = verify_email_address(new_email)
-            
-            if is_valid:
-                email_verified = True
-                print(f"✅ Email verification successful: {status_message}")
-            else:
-                print(f"❌ Email verification failed: {status_message}")
-                print("Email will be updated without verification.")
-                
-        except Exception as e:
-            print(f"⚠️ Email verification service unavailable: {e}")
-            print("Email will be updated without verification.")
+
+    # Validate email format
+    if not validate_email_format(new_email):
+        print("❌ Invalid email format!")
+        return False
 
     try:
-        cursor.execute("UPDATE ACCOUNTS SET email = %s, email_verified = %s WHERE account_no = %s",
-                       (email_to_store, email_verified, account_num))
+        cursor.execute("UPDATE ACCOUNTS SET email = %s WHERE account_no = %s",
+                       (email_to_store, account_num))
         connection.commit()
         return True
     except Exception as e:
@@ -353,44 +318,6 @@ def update_email(account_num, new_email, verify_email=False):
     finally:
         cursor.close()
         connection.close()
-
-def verify_email_manually(account_num):
-    """Manually verify email for an existing account"""
-    current_email = fetch_email(account_num)
-    
-    if not current_email:
-        print("No email address found for this account.")
-        return False
-    
-    print(f"Current email: {current_email}")
-    
-    try:
-        from kickbox_email_verification import verify_email_address, initialize_kickbox
-        
-        # Initialize Kickbox with test API key
-        initialize_kickbox("test_9e152477679a24e7d8ac0df16467a2f180d3167203fe3789f876db691b8b4c0d")
-        
-        is_valid, status_message, api_response = verify_email_address(current_email)
-        
-        connection = get_connection()
-        cursor = connection.cursor()
-        
-        cursor.execute("UPDATE ACCOUNTS SET email_verified = %s WHERE account_no = %s",
-                       (is_valid, account_num))
-        connection.commit()
-        cursor.close()
-        connection.close()
-        
-        if is_valid:
-            print(f"✅ Email verification successful: {status_message}")
-        else:
-            print(f"❌ Email verification failed: {status_message}")
-            
-        return is_valid
-        
-    except Exception as e:
-        print(f"⚠️ Email verification service unavailable: {e}")
-        return False
 
 def save_transaction_to_db(from_acc, to_acc, amount, remark):
     """Save transaction to MySQL database (now integrated into transfer_money)"""
@@ -486,6 +413,276 @@ def transfer_money(from_acc, to_acc, amount, remark="Transfer"):
         cursor.close()
         connection.close()
 
+def deposit_money(account_no, amount):
+    """Deposit money into account with transaction logging"""
+    connection = get_connection()
+    cursor = connection.cursor()
+
+    try:
+        # Convert amount to Decimal for safe arithmetic operations
+        amount_decimal = safe_decimal(amount)
+
+        # Lock the account for update
+        cursor.execute("SELECT balance FROM ACCOUNTS WHERE account_no = %s FOR UPDATE", (account_no,))
+        result = cursor.fetchone()
+
+        if not result:
+            print("Account does not exist!")
+            return False
+
+        current_balance = result[0]
+        new_balance = current_balance + amount_decimal
+
+        # Update balance
+        cursor.execute("UPDATE ACCOUNTS SET balance = %s WHERE account_no = %s",
+                       (new_balance, account_no))
+
+        # Insert transaction record
+        cursor.execute("""
+            INSERT INTO TRANSACTION_HISTORY
+            (from_account, to_account, amount, remark_encrypted, transaction_date, transaction_time)
+            VALUES (%s, %s, %s, %s, CURDATE(), CURTIME())
+        """, (0, account_no, amount_decimal, "Deposit"))
+
+        connection.commit()
+        print(f"Deposit successful! New balance: ₹{format_decimal(new_balance)}")
+        return True
+
+    except Exception as e:
+        print(f"Error during deposit: {e}")
+        try:
+            connection.rollback()
+        except:
+            pass
+        return False
+    finally:
+        cursor.close()
+        connection.close()
+
+def withdraw_money(account_no, amount):
+    """Withdraw money from account with balance check and transaction logging"""
+    connection = get_connection()
+    cursor = connection.cursor()
+
+    try:
+        # Convert amount to Decimal for safe arithmetic operations
+        amount_decimal = safe_decimal(amount)
+
+        # Lock the account for update
+        cursor.execute("SELECT balance FROM ACCOUNTS WHERE account_no = %s FOR UPDATE", (account_no,))
+        result = cursor.fetchone()
+
+        if not result:
+            print("Account does not exist!")
+            return False
+
+        current_balance = result[0]
+
+        if current_balance < amount_decimal:
+            print("Insufficient balance!")
+            return False
+
+        new_balance = current_balance - amount_decimal
+
+        # Update balance
+        cursor.execute("UPDATE ACCOUNTS SET balance = %s WHERE account_no = %s",
+                       (new_balance, account_no))
+
+        # Insert transaction record
+        cursor.execute("""
+            INSERT INTO TRANSACTION_HISTORY
+            (from_account, to_account, amount, remark_encrypted, transaction_date, transaction_time)
+            VALUES (%s, %s, %s, %s, CURDATE(), CURTIME())
+        """, (account_no, 0, amount_decimal, "Withdrawal"))
+
+        connection.commit()
+        print(f"Withdrawal successful! New balance: ₹{format_decimal(new_balance)}")
+        return True
+
+    except Exception as e:
+        print(f"Error during withdrawal: {e}")
+        try:
+            connection.rollback()
+        except:
+            pass
+        return False
+    finally:
+        cursor.close()
+        connection.close()
+
+def delete_account(account_no):
+    """Delete user account and all associated transactions"""
+    connection = get_connection()
+    cursor = connection.cursor()
+
+    try:
+        # Check if account exists
+        cursor.execute("SELECT account_no FROM ACCOUNTS WHERE account_no = %s", (account_no,))
+        if not cursor.fetchone():
+            print("Account does not exist!")
+            return False
+
+        # Delete all transactions related to this account
+        cursor.execute("DELETE FROM TRANSACTION_HISTORY WHERE from_account = %s OR to_account = %s",
+                       (account_no, account_no))
+
+        # Delete the account
+        cursor.execute("DELETE FROM ACCOUNTS WHERE account_no = %s", (account_no,))
+
+        connection.commit()
+        return True
+
+    except Exception as e:
+        print(f"Error deleting account: {e}")
+        try:
+            connection.rollback()
+        except:
+            pass
+        return False
+    finally:
+        cursor.close()
+        connection.close()
+
+def admin_login(username, password):
+    """Authenticate admin user"""
+    connection = get_connection()
+    cursor = connection.cursor()
+    try:
+        cursor.execute("SELECT id FROM ADMIN WHERE username = %s AND password = %s",
+                       (username, password))
+        result = cursor.fetchone()
+        return result is not None
+    except Exception as e:
+        print(f"Admin login error: {e}")
+        return False
+    finally:
+        cursor.close()
+        connection.close()
+
+def admin_panel():
+    """Admin panel with account management features"""
+    while True:
+        print("\n" + "=" * 50)
+        print("ADMIN PANEL")
+        print("=" * 50)
+        print("\n1. View all accounts")
+        print("2. View all transactions")
+        print("3. Delete user account")
+        print("4. View system statistics")
+        print("5. Logout")
+
+        try:
+            choice = int(input("\nENTER YOUR CHOICE: "))
+        except ValueError:
+            print("Invalid input! Please enter a number.")
+            continue
+
+        if choice == 1:
+            # View all accounts
+            connection = get_connection()
+            cursor = connection.cursor()
+            cursor.execute("SELECT account_no, name, phone_num, email, balance, account_type FROM ACCOUNTS")
+            accounts = cursor.fetchall()
+            cursor.close()
+            connection.close()
+
+            if not accounts:
+                print("No accounts found.")
+            else:
+                print("\n" + "=" * 80)
+                print("ALL ACCOUNTS")
+                print("=" * 80)
+                print(f"{'Account No':<12} {'Name':<20} {'Phone':<15} {'Email':<25} {'Balance':<12} {'Type':<10}")
+                print("-" * 80)
+                for acc in accounts:
+                    email = acc[3] if acc[3] else "N/A"
+                    print(f"{acc[0]:<12} {acc[1]:<20} {acc[2]:<15} {email:<25} ₹{format_decimal(acc[4]):<11} {acc[5]:<10}")
+
+        elif choice == 2:
+            # View all transactions
+            connection = get_connection()
+            cursor = connection.cursor()
+            cursor.execute("""
+                SELECT th.transaction_date, th.transaction_time, th.from_account, th.to_account,
+                       th.amount, th.remark_encrypted
+                FROM TRANSACTION_HISTORY th
+                ORDER BY th.transaction_date DESC, th.transaction_time DESC LIMIT 50
+            """)
+            transactions = cursor.fetchall()
+            cursor.close()
+            connection.close()
+
+            if not transactions:
+                print("No transactions found.")
+            else:
+                print("\n" + "=" * 100)
+                print("RECENT TRANSACTIONS")
+                print("=" * 100)
+                print(f"{'Date':<12} {'Time':<10} {'From':<8} {'To':<8} {'Amount':<12} {'Remark':<30}")
+                print("-" * 100)
+                for trans in transactions:
+                    from_acc = str(trans[2]) if trans[2] != 0 else "DEPOSIT"
+                    to_acc = str(trans[3]) if trans[3] != 0 else "WITHDRAWAL"
+                    print(f"{trans[0]:<12} {trans[1]:<10} {from_acc:<8} {to_acc:<8} ₹{format_decimal(trans[4]):<11} {trans[5]:<30}")
+
+        elif choice == 3:
+            # Delete user account
+            try:
+                account_no = int(input("ENTER ACCOUNT NUMBER TO DELETE: "))
+                confirm = input(f"ARE YOU SURE YOU WANT TO DELETE ACCOUNT {account_no}? (YES/NO): ").upper()
+                if confirm == 'YES':
+                    if delete_account(account_no):
+                        print("ACCOUNT DELETED SUCCESSFULLY!")
+                    else:
+                        print("ACCOUNT DELETION FAILED!")
+                else:
+                    print("Account deletion cancelled.")
+            except ValueError:
+                print("Invalid account number!")
+
+        elif choice == 4:
+            # View system statistics
+            connection = get_connection()
+            cursor = connection.cursor()
+
+            # Total accounts
+            cursor.execute("SELECT COUNT(*) FROM ACCOUNTS")
+            total_accounts = cursor.fetchone()[0]
+
+            # Total balance
+            cursor.execute("SELECT SUM(balance) FROM ACCOUNTS")
+            total_balance = cursor.fetchone()[0] or 0
+
+            # Total transactions
+            cursor.execute("SELECT COUNT(*) FROM TRANSACTION_HISTORY")
+            total_transactions = cursor.fetchone()[0]
+
+            # Account types breakdown
+            cursor.execute("SELECT account_type, COUNT(*) FROM ACCOUNTS GROUP BY account_type")
+            account_types = cursor.fetchall()
+
+            cursor.close()
+            connection.close()
+
+            print("\n" + "=" * 50)
+            print("SYSTEM STATISTICS")
+            print("=" * 50)
+            print(f"Total Accounts: {total_accounts}")
+            print(f"Total Balance: ₹{format_decimal(total_balance)}")
+            print(f"Total Transactions: {total_transactions}")
+            print("\nAccount Types:")
+            for acc_type, count in account_types:
+                print(f"  {acc_type}: {count}")
+
+        elif choice == 5:
+            print("LOGGING OUT FROM ADMIN PANEL...")
+            time.sleep(1)
+            print("LOGGED OUT SUCCESSFULLY!")
+            break
+
+        else:
+            print("INVALID CHOICE!")
+
 def get_transaction_history(account_no):
     """Get transaction history from database"""
     print("\n=== Transaction History ===")
@@ -524,66 +721,32 @@ def email_management_menu(account_no):
     while True:
         print("\n=== EMAIL MANAGEMENT ===")
         current_email = fetch_email(account_no)
-        email_verified = fetch_email_verified(account_no)
-        
+
         if current_email:
-            verification_status = "✅ Verified" if email_verified else "❌ Unverified"
-            print(f"Current email: {current_email} ({verification_status})")
+            print(f"Current email: {current_email}")
         else:
             print("No email address associated with this account.")
-        
+
         print("\n1. Add/Update email")
-        print("2. Verify email manually")
-        print("3. View email verification status")
-        print("4. Back to main menu")
-        
+        print("2. Back to main menu")
+
         try:
             choice = int(input("ENTER YOUR CHOICE: "))
         except ValueError:
             print("Invalid input! Please enter a number.")
             continue
-        
+
         if choice == 1:
             new_email = input("ENTER NEW EMAIL ADDRESS: ")
-            
-            # Basic email format validation
-            import re
-            if not re.match(r'^[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}$', new_email):
-                print("❌ Invalid email format!")
-                continue
-            
-            verify_choice = input("Verify email with Kickbox API? (Y/N): ").upper()
-            verify_email = verify_choice == 'Y'
-            
-            if update_email(account_no, new_email, verify_email):
+
+            if update_email(account_no, new_email):
                 print("✅ Email updated successfully!")
             else:
                 print("❌ Failed to update email.")
-                
+
         elif choice == 2:
-            if not current_email:
-                print("No email address to verify. Please add an email first.")
-                continue
-                
-            print("Verifying email with Kickbox API...")
-            if verify_email_manually(account_no):
-                print("✅ Email verification completed!")
-            else:
-                print("❌ Email verification failed.")
-                
-        elif choice == 3:
-            if current_email:
-                verification_status = "✅ Verified" if email_verified else "❌ Unverified"
-                print(f"Email verification status: {verification_status}")
-                
-                if not email_verified:
-                    print("Tip: You can manually verify your email using option 2.")
-            else:
-                print("No email address found.")
-                
-        elif choice == 4:
             break
-            
+
         else:
             print("Invalid choice!")
 
@@ -592,12 +755,15 @@ def login(account_no, pin):
 
     while True:
         print("\n1. Check account details")
-        print("2. Transfer money")
-        print("3. Change PIN")
-        print("4. Update personal info")
-        print("5. Check transaction history")
-        print("6. Email management")
-        print("7. Logout")
+        print("2. Deposit money")
+        print("3. Withdraw money")
+        print("4. Transfer money")
+        print("5. Change PIN")
+        print("6. Update personal info")
+        print("7. Check transaction history")
+        print("8. Email management")
+        print("9. Delete account")
+        print("10. Logout")
 
         try:
             choice = int(input("ENTER YOUR CHOICE: "))
@@ -611,7 +777,6 @@ def login(account_no, pin):
             account_type = fetch_account_type(account_no)
             phone_no = fetch_phone_no(account_no)
             email = fetch_email(account_no)
-            email_verified = fetch_email_verified(account_no)
 
             print("\nFetching account details...")
             time.sleep(1)
@@ -622,14 +787,45 @@ def login(account_no, pin):
             print(f"Name: {name}")
             print(f"Phone Number: {phone_no}")
             if email:
-                verification_status = "✅ Verified" if email_verified else "❌ Unverified"
-                print(f"Email: {email} ({verification_status})")
+                print(f"Email: {email}")
             else:
                 print("Email: Not provided")
             print(f"Account Type: {account_type}")
             print(f"Balance: ₹{format_decimal(balance)}")
 
         elif choice == 2:
+            # Deposit money
+            try:
+                amount = safe_float_input("ENTER THE AMOUNT TO DEPOSIT: ")
+                if amount <= 0:
+                    print("Amount must be positive!")
+                    continue
+
+                if deposit_money(account_no, amount):
+                    print("DEPOSIT SUCCESSFUL!")
+                else:
+                    print("DEPOSIT FAILED!")
+
+            except ValueError:
+                print("Invalid input!")
+
+        elif choice == 3:
+            # Withdraw money
+            try:
+                amount = safe_float_input("ENTER THE AMOUNT TO WITHDRAW: ")
+                if amount <= 0:
+                    print("Amount must be positive!")
+                    continue
+
+                if withdraw_money(account_no, amount):
+                    print("WITHDRAWAL SUCCESSFUL!")
+                else:
+                    print("WITHDRAWAL FAILED!")
+
+            except ValueError:
+                print("Invalid input!")
+
+        elif choice == 4:
             try:
                 to_acc = int(input("ENTER THE ACCOUNT NUMBER TO TRANSFER MONEY: "))
                 amount = safe_float_input("ENTER THE AMOUNT TO TRANSFER: ")
@@ -650,7 +846,7 @@ def login(account_no, pin):
             except ValueError:
                 print("Invalid input!")
 
-        elif choice == 3:
+        elif choice == 5:
             try:
                 new_pin = int(input("ENTER YOUR NEW PIN (4-6 digits): "))
                 if len(str(new_pin)) < 4 or len(str(new_pin)) > 6:
@@ -669,7 +865,7 @@ def login(account_no, pin):
             except ValueError:
                 print("Invalid PIN format!")
 
-        elif choice == 4:
+        elif choice == 6:
             update_choice = input("DO YOU WANT TO UPDATE YOUR PERSONAL INFO (Y/N): ")
             if update_choice.upper() == 'Y':
                 new_phone_no = input("ENTER YOUR NEW PHONE NUMBER: ")
@@ -691,13 +887,25 @@ def login(account_no, pin):
                     cursor.close()
                     connection.close()
 
-        elif choice == 5:
+        elif choice == 7:
             get_transaction_history(account_no)
 
-        elif choice == 6:
+        elif choice == 8:
             email_management_menu(account_no)
 
-        elif choice == 7:
+        elif choice == 9:
+            # Delete account
+            confirm = input("ARE YOU SURE YOU WANT TO DELETE YOUR ACCOUNT? THIS ACTION CANNOT BE UNDONE! (YES/NO): ").upper()
+            if confirm == 'YES':
+                if delete_account(account_no):
+                    print("ACCOUNT DELETED SUCCESSFULLY!")
+                    return  # Exit login function
+                else:
+                    print("ACCOUNT DELETION FAILED!")
+            else:
+                print("Account deletion cancelled.")
+
+        elif choice == 10:
             print("LOGGING OUT...")
             time.sleep(1)
             print("LOGGED OUT SUCCESSFULLY!")
@@ -706,6 +914,7 @@ def login(account_no, pin):
         else:
             print("INVALID CHOICE!")
 
+# 2
 def main():
     # Initialize database
     init_database()
@@ -717,9 +926,10 @@ def main():
         time.sleep(0.5)
 
         print("\n1. OPEN ACCOUNT")
-        print("2. LOGIN ACCOUNT")
-        print("3. ABOUT")
-        print("4. EXIT")
+        print("2. USER ACCOUNT")
+        print("3. ADMIN LOGIN")
+        print("4. ABOUT")
+        print("5. EXIT")
 
         try:
             choice = int(input("\nENTER YOUR CHOICE: "))
@@ -732,22 +942,15 @@ def main():
             name = input("ENTER YOUR NAME: ")
             phone_no = input("ENTER YOUR PHONE NUMBER: ")
             
-            # Email input with verification option
+            # Email input with regex validation
             email_choice = input("Do you want to provide email address? (Y/N): ").upper()
             email = None
-            verify_email = False
-            
+
             if email_choice == 'Y':
                 email = input("ENTER YOUR EMAIL ADDRESS: ")
-                
-                # Basic email format validation
-                import re
-                if not re.match(r'^[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}$', email):
+                if not validate_email_format(email):
                     print("❌ Invalid email format! Account will be created without email.")
                     email = None
-                else:
-                    verification_choice = input("Verify email with Kickbox API? (Y/N): ").upper()
-                    verify_email = verification_choice == 'Y'
 
             try:
                 pin = int(input("ENTER YOUR PIN (4-6 digits): "))
@@ -762,7 +965,7 @@ def main():
                     print("Account type must be SAVINGS or CURRENT!")
                     continue
 
-                account_no = account_open(name, phone_no, pin, balance, account_type, email, verify_email)
+                account_no = account_open(name, phone_no, pin, balance, account_type, email)
                 if account_no:
                     print(f"\nAccount opened successfully!")
                     print(f"Your account number is: {account_no}")
@@ -792,21 +995,36 @@ def main():
                 print("Invalid input format!")
 
         elif choice == 3:
+            # Admin login
+            print("\n=== ADMIN LOGIN ===")
+            username = input("ENTER ADMIN USERNAME: ")
+            password = input("ENTER ADMIN PASSWORD: ")
+
+            if admin_login(username, password):
+                print("\nAdmin login successful!")
+                admin_panel()
+            else:
+                print("Invalid admin credentials!")
+
+        elif choice == 4:
             print("\n" + "=" * 50)
             print("BANK MANAGEMENT SYSTEM - VERSION 3.0")
             print("=" * 50)
             print("\nDeveloped by: SIDHARTH and RITESH")
             print("\nFeatures:")
             print("- Secure account management")
-            print("- Email verification with Kickbox API")
+            print("- Email validation with regex")
+            print("- Deposit and withdrawal functionality")
+            print("- Account deletion")
+            print("- Admin panel for system management")
             print("- Real-time balance tracking")
             print("- Transaction history")
             print("- PIN and personal info management")
-            print("- Email management and verification")
+            print("- Email management")
             print("- No blockchain - simplified system")
             time.sleep(3)
 
-        elif choice == 4:
+        elif choice == 5:
             print("\nEXITING...")
             time.sleep(1)
             print("THANK YOU FOR USING BANK MANAGEMENT SYSTEM!")
@@ -818,4 +1036,3 @@ def main():
 
 if __name__ == "__main__":
     main()
-
